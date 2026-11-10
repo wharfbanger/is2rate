@@ -331,9 +331,10 @@ def fit(t, dem, d_mm, seasonal, min_passes):
 
 
 def boot_se(t, dem, d_mm, seasonal, n_boot, rng):
-    v = []
+    v = []; k = design(t, dem, seasonal).shape[1]
     for _ in range(n_boot):
         i = rng.integers(0, len(t), len(t))
+        if len(np.unique(i)) < k + 2: continue   # too few distinct passes: near-singular fit, absurd rates
         r, _, _ = fit(t[i], dem[i], d_mm[i], seasonal, 1)
         if np.isfinite(r): v.append(r)
     return float(np.std(v, ddof=1)) if len(v) > 10 else np.nan

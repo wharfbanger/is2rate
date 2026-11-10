@@ -88,11 +88,15 @@ These runs used the published hexagon grid, 2024 and 2021 LINZ LiDAR (NZGeoid201
 
 - **Against the published map.** 429 of the 440 published 3 km hexagons are reproduced, with rate r = 0.82, a median difference of +0.2 mm year⁻¹ and a median |difference| of 3.6 mm year⁻¹. The published hexagon SEs are about 6–9 mm year⁻¹.
 - **Against an independent re-implementation with `reference = none`.** 551 of 551 hexagons agree, with r = 0.999 and a median difference of 0.00 mm year⁻¹.
-- **Copernicus GLO-30 in place of LiDAR.** The bias is small (median +0.5 mm year⁻¹), but the hexagon rates are noisy (r = 0.35 against the LiDAR run) and SEs are about double (median 15 against 8 mm year⁻¹). Treat single hexagons from Copernicus with caution, and consider `hex_width_m = 5000`.
+- **Copernicus GLO-30 in place of LiDAR.** The bias is small (median +0.5 mm year⁻¹), but the hexagon rates are noisy (r = 0.34 against the LiDAR run) and SEs are larger (median 13 against 8 mm year⁻¹). Treat single hexagons from Copernicus with caution, and consider `hex_width_m = 5000`.
 
 The runtime was 11 min for a 100 × 100 km area with 1 m LiDAR, most of it spent sampling the DEM. Sampled segments are cached, so a re-run with different hexagon or reference settings takes under 2 min.
 
+An online test also ran successfully, on a 0.2° × 0.15° area near Kopuatai with all defaults. It used Copernicus and WorldCover read from AWS, EGM2008 from PROJ, and segments from SlideRule, and took 4 min.
+
 ## Caveats
+
+- **SlideRule read failures.** SlideRule can report occasional granule read failures, logged as `Alert <-7>: H5Coro::Future read failure`. Those passes are then partly missing. Delete `out_dir/cache/atl06sr_*` and re-run to retry them.
 
 - **Few passes.** Hexagons have few passes (about 13 at 3 km in the Waikato), so their SEs are approximate. Map patterns are more reliable than single hexagons.
 - **Correlated passes.** Passes close in time can share weather and surface conditions. SEs that treat passes as independent may be too small.
