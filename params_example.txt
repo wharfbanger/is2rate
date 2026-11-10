@@ -1,0 +1,57 @@
+# is2rate 0.1.0 parameter file. Lines: key = value  # comment
+
+# --- area and time
+bbox = 175.2, -37.95, 175.7, -37.6  # lon_min, lat_min, lon_max, lat_max (WGS84 degrees), e.g. 175.2, -37.95, 175.7, -37.6. Required
+start = 2018-10-13                 # first pass (YYYY-MM-DD, or YYYY = 1 January)
+end = 2026-12-31                   # last pass (YYYY-MM-DD, or YYYY = 31 December)
+out_dir = is2rate_out              # output directory
+name = is2rate                     # prefix of output files
+crs = auto                         # working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193
+
+# --- reference surface
+dem = copernicus                   # copernicus (GLO-30, read from AWS) or DEM GeoTIFF/VRT path(s), comma-separated, in priority order
+dem_geoid = egm2008                # vertical datum of the DEM(s): egm2008, ellipsoid, or a geoid-height GeoTIFF (N; H = h - N)
+
+# --- land cover and reference
+landcover = worldcover             # worldcover (ESA WorldCover 2021 10 m, read from AWS) or a GeoTIFF with WorldCover class codes
+target_classes = 30, 40            # land-cover classes measured in each hexagon (WorldCover 30 grassland, 40 cropland)
+ref_classes = 30, 40               # land-cover classes used as the reference
+min_target_share = 0.25            # hexagons with less than this fraction of their area in target classes are not reported
+exclude = none                     # vector (gpkg, shp, geojson) or raster (nonzero) of areas not used as reference, e.g. peat soils
+exclude_buffer_m = 500             # reference segments must lie at least this far from 'exclude'
+reference = local                  # local: relative to reference classes on the same passes; none: absolute rates
+ref_halfwidth_m = 10000            # reference window, +- this distance from the hexagon centre (hexagon itself excluded)
+
+# --- hexagons and output grid
+hex_width_m = 3000                 # hexagon width, flat to flat (m)
+hex_orientation = flat             # flat (flat top, as the published maps) or pointy (pointy top)
+grid_origin = auto                 # x, y of the first hexagon centre in the working CRS (auto: lower-left corner of the bbox)
+out_res_m = 100                    # pixel size of the output GeoTIFF (m)
+
+# --- ICESat-2 segments (SlideRule ATL06-SR)
+segments_file = none               # existing ATL06-SR GeoParquet file(s), glob allowed; none: request from SlideRule (cached in out_dir/cache)
+sliderule_url = slideruleearth.io  # SlideRule server
+seg_len_m = 20                     # segment length (m)
+seg_res_m = 10                     # segment spacing (m)
+atl08_ground = yes                 # use only photons classified as ground by ATL08
+tile_deg = 0.5                     # size of SlideRule request tiles (degrees)
+
+# --- segment quality
+min_photons = 10                   # minimum photons per segment
+max_h_sigma_m = 0.15               # maximum height uncertainty (m)
+max_along_slope = 0.03             # maximum along-track slope (m/m)
+max_window_m = 4                   # maximum photon window (m)
+max_terrain_slope_deg = 2          # maximum DEM slope over +-10 m (degrees)
+max_resid_dev_m = 0.5              # drop segments whose residual is further than this from the pass median (m)
+
+# --- trend fit
+min_segs_per_pass = 10             # minimum target and reference segments on a pass
+min_passes = 8                     # minimum passes for a rate
+seasonal = yes                     # fit an annual sinusoid
+se_method = bootstrap              # band 2: bootstrap (whole passes resampled) or formula (least-squares SE)
+n_boot = 300                       # bootstrap resamples
+seed = 0                           # random seed
+
+# --- outputs
+write_gpkg = yes                   # write hexagons as GeoPackage
+write_png = yes                    # write a quick-look PNG

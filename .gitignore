@@ -1,0 +1,4 @@
+__pycache__/
+*_out/
+is2rate_out/
+*.parquet
