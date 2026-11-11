@@ -22,6 +22,7 @@ exclude = none                     # vector (gpkg, shp, geojson) or raster (nonz
 exclude_buffer_m = 500             # reference segments must lie at least this far from 'exclude'
 reference = local                  # local: relative to reference classes on the same passes; none: absolute rates
 ref_halfwidth_m = 10000            # reference window, +- this distance from the hexagon centre (hexagon itself excluded)
+ref_area = none                    # vector (gpkg, shp, geojson): fixed reference area for every hexagon, e.g. a town; replaces the ref_halfwidth_m window
 
 # --- hexagons and output grid
 hex_width_m = 3000                 # hexagon width, flat to flat (m)

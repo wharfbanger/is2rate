@@ -83,6 +83,7 @@ See `params_example.txt` for every parameter and its default. The main ones:
 | `exclude`, `exclude_buffer_m` | none, 500 | areas not used as reference (e.g. peat soils) |
 | `reference` | local | local (relative to reference land) or none (absolute) |
 | `ref_halfwidth_m` | 10000 | reference window, ±m from the hexagon centre |
+| `ref_area` | none | polygon file: a fixed reference area for every hexagon (replaces the window) |
 | `hex_width_m` | 3000 | hexagon width, flat to flat (m) |
 | `cell_shape` | hex | hex (hexagons) or square (squares of width `hex_width_m`) |
 | `hex_orientation` | flat | flat-topped (as the published maps) or pointy-topped |
@@ -90,6 +91,19 @@ See `params_example.txt` for every parameter and its default. The main ones:
 | `se_method` | bootstrap | band 2: bootstrap or formula |
 
 The DEM is only a fixed reference surface. It is also used for the slope filter. Static DEM errors are constant in time and are absorbed by the DEM constant, so they do not bias the trend. They do add scatter, because tracks fall in different places on each pass. Use LiDAR where it exists; Copernicus works anywhere but is noisier (see Validation).
+
+### Fixed reference area (`ref_area`)
+
+`ref_area` sets one reference area for every hexagon, for example a town or a GNSS site. A hexagon then uses only the passes that also cross the reference area with at least `min_segs_per_pass` reference segments.
+
+ICESat-2 tracks are narrow, so a small reference area leaves few usable hexagons. In the Waikato tests:
+
+| Reference | Hexagons with a rate |
+|---|---|
+| Cambridge (4 × 4 km box, built-up land) | 44 of 562 |
+| All built-up land in the study area | 477 |
+
+The default moving window (`ref_halfwidth_m`) suits ICESat-2 best. Use `ref_area` to match the frame of another data set, such as InSAR referenced to a town.
 
 ## Outputs (in `out_dir`)
 

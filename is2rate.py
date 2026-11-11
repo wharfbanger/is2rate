@@ -41,6 +41,7 @@ PARAMS = [
     ("exclude_buffer_m", "500", "reference segments must lie at least this far from 'exclude'"),
     ("reference", "local", "local: relative to reference classes on the same passes; none: absolute rates"),
     ("ref_halfwidth_m", "10000", "reference window, +- this distance from the hexagon centre (hexagon itself excluded)"),
+    ("ref_area", "none", "vector (gpkg, shp, geojson): fixed reference area for every hexagon, e.g. a town; replaces the ref_halfwidth_m window"),
     ("# --- hexagons and output grid", None, None),
     ("hex_width_m", "3000", "hexagon width, flat to flat (m)"),
     ("cell_shape", "hex", "hex (hexagons) or square (square cells of width hex_width_m)"),
@@ -125,6 +126,7 @@ def read_params(path, overrides=()):
     q["pair_radius_m"] = float(p["pair_radius_m"])
     q["grid_origin"] = None if p["grid_origin"].lower() == "auto" else lst(p["grid_origin"])
     q["exclude"] = None if p["exclude"].lower() == "none" else p["exclude"]
+    q["ref_area"] = None if p["ref_area"].lower() == "none" else p["ref_area"]
     q["segments_file"] = None if p["segments_file"].lower() == "none" else p["segments_file"]
     if p["reference"] not in ("local", "none"): sys.exit("reference must be local or none")
     if p["cell_shape"] not in ("hex", "square"): sys.exit("cell_shape must be hex or square")
@@ -417,6 +419,16 @@ def run(p, raw):
         dist = distance_transform_edt(~em) * GR
         c = np.clip(((s.x.values - X0) // GR).astype(int), 0, G["shape"][1] - 1); r = np.clip(((Y1 - s.y.values) // GR).astype(int), 0, G["shape"][0] - 1)
         s["xdist"] = dist[r, c]
+    s["in_ref_area"] = True
+    if p["ref_area"]:
+        import geopandas as gpd
+        from rasterio.features import rasterize
+        ra = gpd.read_file(p["ref_area"]).to_crs(W)
+        am = rasterize(((g, 1) for g in ra.geometry if g is not None and not g.is_empty), out_shape=G["shape"], transform=G["transform"], fill=0, dtype="uint8") > 0
+        c = np.clip(((s.x.values - X0) // GR).astype(int), 0, G["shape"][1] - 1); r = np.clip(((Y1 - s.y.values) // GR).astype(int), 0, G["shape"][0] - 1)
+        inb = (s.x.values >= X0) & (s.x.values < X1) & (s.y.values > Y0) & (s.y.values <= Y1)
+        s["in_ref_area"] = am[r, c] & inb
+        log("fixed reference area", os.path.basename(p["ref_area"]), f"{am.sum() * GR * GR / 1e6:.1f} km2,", int(s.in_ref_area.sum()), "segments inside")
 
     # quality and residuals
     q = (s.n_fit_photons >= p["min_photons"]) & (s.h_sigma < p["max_h_sigma_m"]) & (s.dh_fit_dx.abs() < p["max_along_slope"]) & \
@@ -444,10 +456,10 @@ def run(p, raw):
     del gx, gy, lcg, tm, hg
     s["hex"] = tree.query(np.column_stack([s.x.values, s.y.values]))[1]
     is_t = s.lc.isin(p["target_classes"]).values
-    is_r = s.lc.isin(p["ref_classes"]).values & (s.xdist.values >= p["exclude_buffer_m"])
+    is_r = s.lc.isin(p["ref_classes"]).values & (s.xdist.values >= p["exclude_buffer_m"]) & s.in_ref_area.values
 
     # per-hexagon series: one value per pass
-    rng = np.random.default_rng(p["seed"]); R = p["ref_halfwidth_m"]; MN = p["min_segs_per_pass"]
+    rng = np.random.default_rng(p["seed"]); R = 1e12 if p["ref_area"] else p["ref_halfwidth_m"]; MN = p["min_segs_per_pass"]   # fixed area: no window
 
     def dem_series(h):
         ti = np.asarray(T[h]); tp = pd.DataFrame({k: v[ti] for k, v in cols.items()})
@@ -535,7 +547,7 @@ def run(p, raw):
         d.write(rate[hp], 1); d.write(se[hp], 2)
         d.set_band_description(1, "rate (mm/yr)"); d.set_band_description(2, f"SE (mm/yr, {p['se_method']})")
         d.update_tags(software=f"is2rate {__version__}", units="mm/yr", reference=("relative to " + ",".join(map(str, p["ref_classes"])) +
-                      f" within +-{R:.0f} m on the same passes") if p["reference"] == "local" else "absolute", **{f"param_{k}": v for k, v in raw.items()})
+                      (f" in {os.path.basename(p['ref_area'])}" if p["ref_area"] else f" within +-{R:.0f} m") + " on the same passes") if p["reference"] == "local" else "absolute", **{f"param_{k}": v for k, v in raw.items()})
     write_qml(stem + "_rate.qml"); log("wrote", stem + "_rate.tif")
     if p["write_gpkg"]:
         import geopandas as gpd
@@ -576,7 +588,8 @@ def quicklook(Hx, rr, W, p, path, ext):
     ax.add_collection(PolyCollection(polys, facecolors=cl, edgecolors="white", linewidths=0.4))
     ax.set_xlim(ext[0], ext[2]); ax.set_ylim(ext[1], ext[3]); ax.set_aspect("equal"); ax.set_facecolor("#d4d4d4")
     ax.ticklabel_format(useOffset=False, style="plain"); ax.tick_params(labelsize=7)
-    ref = "relative to reference land on the same passes" if p["reference"] == "local" else "absolute"
+    ref = ("absolute" if p["reference"] != "local" else
+           f"relative to {os.path.splitext(os.path.basename(p['ref_area']))[0]} on the same passes" if p["ref_area"] else "relative to reference land on the same passes")
     ax.set_title(f"ICESat-2, {p['hex_width_m'] / 1000:g} km {'squares' if p['cell_shape'] == 'square' else 'hexagons'} ({ref}), {p['start']:%Y-%m-%d} to {p['end']:%Y-%m-%d}", loc="left", fontsize=8)
     ax.legend(handles=[Patch(facecolor=c, edgecolor="#999999", lw=0.4, label=l) for _, c, l in BREAKS], title="Rate (mm year⁻¹)", fontsize=6.5,
               title_fontsize=7, ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.06), frameon=False)
