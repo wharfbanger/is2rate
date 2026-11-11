@@ -112,6 +112,17 @@ ICESat-2 tracks are narrow, so a small reference area leaves few usable hexagons
 
 The default moving window (`ref_halfwidth_m`) suits ICESat-2 best. Use `ref_area` to match the frame of another data set, such as InSAR referenced to a town.
 
+### One rate for a whole area (`target_area`)
+
+`target_area` takes a polygon file, for example a soil class or a peat body. All target land inside it is fitted as one unit, giving one rate instead of a map, written to `NAME_target.json`. The file holds the rate, the formula and bootstrap SEs, the 95% CI (t distribution) and the number of passes.
+
+A large unit can span two DEMs. Each pass then gives one row per DEM, each DEM with its own constant. The reference excludes only the target's own segments, so a reference class inside the polygon (e.g. towns within a farmland area) is still used. Set `ref_area` to a large polygon for a regional reference.
+
+### Other options
+
+- `exclude_targets = yes` also leaves `exclude` (with its buffer) out of the targets, for example to map mineral soils only.
+- `cache_dir` shares downloads and sampled segments between runs over the same area.
+
 ## Outputs (in `out_dir`)
 
 | File | Content |

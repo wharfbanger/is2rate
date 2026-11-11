@@ -1,10 +1,11 @@
-# is2rate 0.2.0 parameter file. Lines: key = value  # comment
+# is2rate 0.3.0 parameter file. Lines: key = value  # comment
 
 # --- area and time
 bbox = 175.2, -37.95, 175.7, -37.6  # lon_min, lat_min, lon_max, lat_max (WGS84 degrees), e.g. 175.2, -37.95, 175.7, -37.6. Required
 start = 2018-10-13                 # first pass (YYYY-MM-DD, or YYYY = 1 January)
 end = 2026-12-31                   # last pass (YYYY-MM-DD, or YYYY = 31 December)
 out_dir = is2rate_out              # output directory
+cache_dir = auto                   # cache for downloads and sampled segments (auto: out_dir/cache); share one between runs over the same area
 name = is2rate                     # prefix of output files
 crs = auto                         # working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193
 
@@ -19,9 +20,11 @@ target_classes = 30, 40            # land-cover classes measured in each hexagon
 ref_classes = 30, 40               # land-cover classes used as the reference
 min_target_share = 0.25            # hexagons with less than this fraction of their area in target classes are not reported
 exclude = none                     # vector (gpkg, shp, geojson) or raster (nonzero) of areas not used as reference, e.g. peat soils
+exclude_targets = no               # yes: also leave 'exclude' (with its buffer) out of the targets, e.g. to map mineral soils only
 exclude_buffer_m = 500             # reference segments must lie at least this far from 'exclude'
 reference = local                  # local: relative to reference classes on the same passes; none: absolute rates
 ref_halfwidth_m = 10000            # reference window, +- this distance from the hexagon centre (hexagon itself excluded)
+target_area = none                 # vector: fit all target land inside these polygons as ONE unit (e.g. a soil class); writes a rate instead of a map
 ref_area = none                    # vector (gpkg, shp, geojson): fixed reference area for every hexagon, e.g. a town; replaces the ref_halfwidth_m window
 
 # --- hexagons and output grid

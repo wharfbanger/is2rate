@@ -17,7 +17,7 @@ import argparse, glob, json, math, os, sys, time
 import numpy as np
 import pandas as pd
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # (key, default, comment). Defaults are those used for the Waikato (Harvey, in prep.).
 PARAMS = [
@@ -26,6 +26,7 @@ PARAMS = [
     ("start", "2018-10-13", "first pass (YYYY-MM-DD, or YYYY = 1 January)"),
     ("end", "2026-12-31", "last pass (YYYY-MM-DD, or YYYY = 31 December)"),
     ("out_dir", "is2rate_out", "output directory"),
+    ("cache_dir", "auto", "cache for downloads and sampled segments (auto: out_dir/cache); share one between runs over the same area"),
     ("name", "is2rate", "prefix of output files"),
     ("crs", "auto", "working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193"),
     ("# --- reference surface", None, None),
@@ -38,9 +39,11 @@ PARAMS = [
     ("ref_classes", "30, 40", "land-cover classes used as the reference"),
     ("min_target_share", "0.25", "hexagons with less than this fraction of their area in target classes are not reported"),
     ("exclude", "none", "vector (gpkg, shp, geojson) or raster (nonzero) of areas not used as reference, e.g. peat soils"),
+    ("exclude_targets", "no", "yes: also leave 'exclude' (with its buffer) out of the targets, e.g. to map mineral soils only"),
     ("exclude_buffer_m", "500", "reference segments must lie at least this far from 'exclude'"),
     ("reference", "local", "local: relative to reference classes on the same passes; none: absolute rates"),
     ("ref_halfwidth_m", "10000", "reference window, +- this distance from the hexagon centre (hexagon itself excluded)"),
+    ("target_area", "none", "vector: fit all target land inside these polygons as ONE unit (e.g. a soil class); writes a rate instead of a map"),
     ("ref_area", "none", "vector (gpkg, shp, geojson): fixed reference area for every hexagon, e.g. a town; replaces the ref_halfwidth_m window"),
     ("# --- hexagons and output grid", None, None),
     ("hex_width_m", "3000", "hexagon width, flat to flat (m)"),
@@ -124,13 +127,14 @@ def read_params(path, overrides=()):
     if p["seasonal"].lower() not in ("yes", "no", "regional", "y", "n", "true", "false", "1", "0"): sys.exit("seasonal must be yes, no or regional")
     q["seasonal"] = "regional" if p["seasonal"].lower() == "regional" else ("yes" if yes(p["seasonal"]) else "no")
     if p["pass_weights"] not in ("none", "count"): sys.exit("pass_weights must be none or count")
-    for k in ("atl08_ground", "write_gpkg", "write_png"):
+    for k in ("atl08_ground", "write_gpkg", "write_png", "exclude_targets"):
         q[k] = yes(p[k])
     q["dem"] = p["dem"].lower() if p["dem"].lower() in ("copernicus", "none") else [s.strip() for s in p["dem"].split(",")]
     q["pair_radius_m"] = float(p["pair_radius_m"])
     q["grid_origin"] = None if p["grid_origin"].lower() == "auto" else lst(p["grid_origin"])
     q["exclude"] = None if p["exclude"].lower() == "none" else p["exclude"]
     q["ref_area"] = None if p["ref_area"].lower() == "none" else p["ref_area"]
+    q["target_area"] = None if p["target_area"].lower() == "none" else p["target_area"]
     q["segments_file"] = None if p["segments_file"].lower() == "none" else p["segments_file"]
     if p["reference"] not in ("local", "none"): sys.exit("reference must be local or none")
     if p["cell_shape"] not in ("hex", "square"): sys.exit("cell_shape must be hex or square")
@@ -382,7 +386,7 @@ def run(p, raw):
     from scipy.spatial import cKDTree
     from scipy.ndimage import distance_transform_edt
     t_start = time.time()
-    os.makedirs(p["out_dir"], exist_ok=True); cache = os.path.join(p["out_dir"], "cache"); os.makedirs(cache, exist_ok=True)
+    os.makedirs(p["out_dir"], exist_ok=True); cache = os.path.join(p["out_dir"], "cache") if p["cache_dir"].lower() == "auto" else p["cache_dir"]; os.makedirs(cache, exist_ok=True)
     W = working_crs(p); WGS = CRS.from_epsg(4326); log("working CRS", W.to_string())
     b = p["bbox"]; tw = Transformer.from_crs(WGS, W, always_xy=True)
     ex, ey = tw.transform(np.r_[np.linspace(b[0], b[2], 50), np.full(50, b[2]), np.linspace(b[2], b[0], 50), np.full(50, b[0])],
@@ -399,8 +403,9 @@ def run(p, raw):
     # heights, DEM residuals, land cover (cached: sampling a 1 m DEM takes minutes)
     import hashlib
     fs_ = sorted(set(sum([glob.glob(f) for f in files], [])))
-    key = json.dumps(dict(f=[(f, os.path.getsize(f), os.path.getmtime(f)) for f in fs_], d=[(f, os.path.getmtime(f)) for f in dems], g=raw["dem_geoid"],
-                          l=(lc, os.path.getmtime(lc)), c=W.to_string(), b=b, t=(str(p["start"]), str(p["end"]))), default=str)
+    nrm = lambda f: os.path.normcase(os.path.abspath(f))   # same file, same key, however the path is written
+    key = json.dumps(dict(f=[(nrm(f), os.path.getsize(f), os.path.getmtime(f)) for f in fs_], d=[(nrm(f), os.path.getmtime(f)) for f in dems], g=raw["dem_geoid"],
+                          l=(nrm(lc), os.path.getmtime(lc)), c=W.to_string(), b=b, t=(str(p["start"]), str(p["end"]))), default=str)
     sc = f"{cache}/segments_sampled_{hashlib.md5(key.encode()).hexdigest()[:12]}.parquet"
     if os.path.exists(sc):
         s = pd.read_parquet(sc); n = {"segments": len(s)}; log("sampled segments from cache", len(s))
@@ -439,16 +444,22 @@ def run(p, raw):
         dist = distance_transform_edt(~em) * GR
         c = np.clip(((s.x.values - X0) // GR).astype(int), 0, G["shape"][1] - 1); r = np.clip(((Y1 - s.y.values) // GR).astype(int), 0, G["shape"][0] - 1)
         s["xdist"] = dist[r, c]
-    s["in_ref_area"] = True
-    if p["ref_area"]:
+    def in_polys(path):
+        """Segments inside the polygons of a vector file (30 m working grid)."""
         import geopandas as gpd
         from rasterio.features import rasterize
-        ra = gpd.read_file(p["ref_area"]).to_crs(W)
+        ra = gpd.read_file(path).to_crs(W)
         am = rasterize(((g, 1) for g in ra.geometry if g is not None and not g.is_empty), out_shape=G["shape"], transform=G["transform"], fill=0, dtype="uint8") > 0
         c = np.clip(((s.x.values - X0) // GR).astype(int), 0, G["shape"][1] - 1); r = np.clip(((Y1 - s.y.values) // GR).astype(int), 0, G["shape"][0] - 1)
         inb = (s.x.values >= X0) & (s.x.values < X1) & (s.y.values > Y0) & (s.y.values <= Y1)
-        s["in_ref_area"] = am[r, c] & inb
-        log("fixed reference area", os.path.basename(p["ref_area"]), f"{am.sum() * GR * GR / 1e6:.1f} km2,", int(s.in_ref_area.sum()), "segments inside")
+        return am[r, c] & inb, am.sum() * GR * GR / 1e6, ra
+    s["in_ref_area"] = True
+    if p["ref_area"]:
+        s["in_ref_area"], km2, _ = in_polys(p["ref_area"])
+        log("fixed reference area", os.path.basename(p["ref_area"]), f"{km2:.1f} km2,", int(s.in_ref_area.sum()), "segments inside")
+    if p["target_area"]:
+        s["in_target_area"], km2, TA = in_polys(p["target_area"])
+        log("target area", os.path.basename(p["target_area"]), f"{km2:.1f} km2,", int(s.in_target_area.sum()), "segments inside")
 
     # quality and residuals
     q = (s.n_fit_photons >= p["min_photons"]) & (s.h_sigma < p["max_h_sigma_m"]) & (s.dh_fit_dx.abs() < p["max_along_slope"]) & \
@@ -475,7 +486,11 @@ def run(p, raw):
     share = np.bincount(hg, minlength=len(C)) * GR * GR / (p["hex_width_m"] ** 2 * (1 if p["cell_shape"] == "square" else np.sqrt(3) / 2))
     del gx, gy, lcg, tm, hg
     s["hex"] = tree.query(np.column_stack([s.x.values, s.y.values]))[1]
+    if p["target_area"]:   # one unit: cell 0 = the target area; reference excludes it
+        s["hex"] = np.where(s.in_target_area.values, 0, -1); ctr = TA.unary_union.centroid
+        C = np.array([[ctr.x, ctr.y]]); share = np.array([1.0])
     is_t = s.lc.isin(p["target_classes"]).values
+    if p["exclude_targets"]: is_t &= (s.xdist.values >= p["exclude_buffer_m"])
     is_r = s.lc.isin(p["ref_classes"]).values & (s.xdist.values >= p["exclude_buffer_m"]) & s.in_ref_area.values
 
     # per-hexagon series: one value per pass
@@ -483,13 +498,18 @@ def run(p, raw):
 
     def dem_series(h):
         ti = np.asarray(T[h]); tp = pd.DataFrame({k: v[ti] for k, v in cols.items()})
-        major = tp.groupby("pid").dem.agg(lambda v: v.value_counts().index[0])
-        tp = tp[tp.dem.values == major.reindex(tp.pid).values]
-        tg = tp.groupby("pid").agg(t=("t", "mean"), dem=("dem", "first"), m=("r", "median"), n=("r", "size")); tg = tg[tg.n >= MN]
-        if len(tg) < p["min_passes"]: return None, 0
+        if p["target_area"]:   # a large unit can span DEMs: one row per pass and DEM, each DEM with its own constant
+            tg = tp.groupby(["pid", "dem"]).agg(t=("t", "mean"), m=("r", "median"), n=("r", "size")).reset_index(level="dem")
+        else:                  # a cell: the DEM holding most of its segments on the pass
+            major = tp.groupby("pid").dem.agg(lambda v: v.value_counts().index[0])
+            tp = tp[tp.dem.values == major.reindex(tp.pid).values]
+            tg = tp.groupby("pid").agg(t=("t", "mean"), dem=("dem", "first"), m=("r", "median"), n=("r", "size"))
+        tg = tg[tg.n >= MN]
+        if tg.index.nunique() < p["min_passes"]: return None, 0
         if p["reference"] == "local":
             xc, yc = C[h]; a, z = np.searchsorted(xs, [xc - R, xc + R]); w = xs_o[a:z]
-            w = w[(np.abs(Y[w] - yc) <= R) & is_r[w] & (cols["hex"][w] != h) & np.isin(cols["pid"][w], tg.index.values)]
+            notself = ~cols["self"][w] if p["target_area"] else (cols["hex"][w] != h)   # unit mode: exclude only the target's own segments
+            w = w[(np.abs(Y[w] - yc) <= R) & is_r[w] & notself & np.isin(cols["pid"][w], np.unique(tg.index.values))]
             rg = pd.DataFrame({"pid": cols["pid"][w], "dem": cols["dem"][w], "r": cols["r"][w]}).groupby(["pid", "dem"]).r.agg(["median", "size"])
             key = pd.MultiIndex.from_arrays([tg.index.values, tg.dem.values])
             rm = rg.reindex(key); ok = (rm["size"].values >= MN)
@@ -536,18 +556,18 @@ def run(p, raw):
         T = pr[pr.is_t & (pr.ha == pr.hb)].groupby("ha").groups; series = pair_series
     else:
         xs_o = np.argsort(s.x.values); xs = s.x.values[xs_o]; Y = s.y.values
-        cols = dict(pid=s.pid.values, dem=s.dem.values, r=s.r.values, t=s.t.values, hex=s.hex.values)
+        cols = dict(pid=s.pid.values, dem=s.dem.values, r=s.r.values, t=s.t.values, hex=s.hex.values, self=is_t & (s.hex.values == 0))
         T = s[is_t].groupby("hex").groups; series = dem_series
     # fraction of each cell's target segments inside 'exclude' (e.g. the Organic Soil fraction)
     ef = pd.Series((s.xdist.values <= 0)[is_t]).groupby(s.hex.values[is_t]).mean()
-    cand = [h for h in T if share[h] >= p["min_target_share"]]
+    cand = [h for h in T if h >= 0 and share[h] >= p["min_target_share"]]
     log("building series for", len(cand), "cells with target data and share >=", p["min_target_share"])
     SER = {}
     for h in cand:
         tg, nseg = series(h)
         if tg is None or len(tg) < p["min_passes"]: continue
         w = (tg.n.values / (tg.n.values + 20.0)) if (p["pass_weights"] == "count" and "n" in tg) else np.ones(len(tg))
-        SER[h] = (tg.t.values, tg.dem.values, tg.d.values * 1000.0, w, nseg)
+        SER[h] = (tg.t.values, tg.dem.values, tg.d.values * 1000.0, w, nseg, int(pd.Index(tg.index).nunique()))
     cyc = {}
     if p["seasonal"] == "regional":
         cls = {h: (bool(p["exclude"]) and ef.get(h, 0.0) >= 0.5) for h in SER}
@@ -558,18 +578,27 @@ def run(p, raw):
             log(f"regional annual cycle, {'cells mostly in exclude' if c else 'other cells'} ({len(hs)}): amplitude {np.hypot(*ab):.1f} mm")
     SEAS = p["seasonal"] == "yes"
     rows = []
-    for i, (h, (t, dem, d, w, nseg)) in enumerate(SER.items()):
+    for i, (h, (t, dem, d, w, nseg, npass)) in enumerate(SER.items()):
         if p["seasonal"] == "regional" and cls[h] in cyc:
             a_, b_ = cyc[cls[h]]; d = d - a_ * np.sin(2 * np.pi * t) - b_ * np.cos(2 * np.pi * t)
         rate, se_f, dof = fit(t, dem, d, SEAS, p["min_passes"], w)
         if not np.isfinite(rate): continue
         se_b = boot_se(t, dem, d, SEAS, p["n_boot"], rng, w) if p["se_method"] == "bootstrap" else np.nan
         rows.append(dict(hid=int(h), x=C[h][0], y=C[h][1], rate=rate, se=se_b if p["se_method"] == "bootstrap" else se_f, se_formula=se_f,
-                         se_boot=se_b, n_pass=len(t), dof=dof, target_share=round(float(share[h]), 3), exclude_frac=round(float(ef.get(h, np.nan)), 3),
+                         se_boot=se_b, n_pass=npass, dof=dof, target_share=round(float(share[h]), 3), exclude_frac=round(float(ef.get(h, np.nan)), 3),
                          n_target_seg=nseg))
         if (i + 1) % 100 == 0: log(f"  {i + 1}/{len(SER)}")
     Hx = pd.DataFrame(rows); log("hexagons with a rate", len(Hx))
     if not len(Hx): sys.exit("no hexagon has enough passes")
+    if p["target_area"]:   # single-unit result: rate, both SEs, 95% CI (t, dof = passes - parameters)
+        from scipy.stats import t as tdist
+        r0 = Hx.iloc[0]; q_ = float(tdist.ppf(0.975, r0.dof))
+        out = dict(target_area=raw["target_area"], target_classes=p["target_classes"], reference=p["reference"], ref_classes=p["ref_classes"],
+                   ref_area=raw["ref_area"], rate=round(float(r0.rate), 2), se_formula=round(float(r0.se_formula), 2), se_boot=round(float(r0.se_boot), 2),
+                   ci95_t=[round(float(r0.rate - q_ * r0.se_formula), 2), round(float(r0.rate + q_ * r0.se_formula), 2)], passes=int(r0.n_pass), dof=int(r0.dof),
+                   target_segments=int(r0.n_target_seg), version=__version__, params=raw)
+        json.dump(out, open(os.path.join(p["out_dir"], p["name"] + "_target.json"), "w"), indent=1, default=str)
+        log("target rate", f"{out['rate']:+.1f} mm/yr, SE {out['se_formula']:.1f} (formula) / {out['se_boot']:.1f} (bootstrap), {out['passes']} passes"); return
 
     # outputs
     stem = os.path.join(p["out_dir"], p["name"])
