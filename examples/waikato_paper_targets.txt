@@ -1,0 +1,22 @@
+# is2rate parameters for the single-target ICESat-2 rates of Harvey (in prep.), Waikato, New Zealand:
+# maximum rates (distance bands inside Organic Soils; farmland selected by InSAR or LiDAR - Copernicus map rate).
+# One run per target polygon and period, e.g.
+#   python is2rate.py examples/waikato_paper_targets.txt --set target_area=data/band_500_1000.gpkg --set name=band_500_1000 --set start=2018-10-13 --set end=2022-06-30
+# See examples/README_paper.md for the targets and periods.
+bbox = 174.689, -38.071, 175.804, -37.140
+start = 2018-10-13
+end = 2026-10-20
+crs = 2193
+dem = data/waikato_2024.vrt, data/waikato_2021.vrt
+dem_geoid = data/nz_linz_nzgeoid2016.tif
+landcover = worldcover
+target_classes = 30, 40
+ref_classes = 30, 40
+exclude = data/smap_organic_waikato.shp
+exclude_buffer_m = 500
+reference = local
+ref_area = data/study_area.gpkg
+seasonal = yes
+target_area = data/band_0_250.gpkg
+out_dir = is2rate_targets
+name = band_0_250
