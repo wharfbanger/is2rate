@@ -19,7 +19,25 @@ The method is the one used for the Waikato, New Zealand (Harvey, in prep., *ICES
 4. On each pass, the median residual of the target land cover in a hexagon (grassland and cropland by default) is differenced from the median residual of reference land cover. The reference is taken within ±10 km of the hexagon centre on the same pass, excluding the hexagon itself and any `exclude` zone plus its buffer. This removes orbit, atmospheric and other errors common to a pass.
 
    Where DEMs overlap, each pass uses the DEM that holds most of the hexagon's segments.
-5. The rate is the least-squares trend of these per-pass differences. The fit also includes an annual sinusoid and a constant for each DEM. A rate needs at least 8 passes, each with at least 10 target and 10 reference segments.
+5. The rate is the least-squares trend of these per-pass differences. The fit includes a constant for each DEM and, optionally, an annual sinusoid (`seasonal`). A rate needs at least 8 passes, each with at least 10 target and 10 reference segments.
+
+### Seasonal term (`seasonal = yes | no`)
+
+Some ground rises and falls through the year, such as peat, shrink-swell clays, or irrigated or drained land. Passes fall unevenly through the year. If a hexagon's early passes were mostly wet-season and its late passes mostly dry-season, the seasonal cycle would leak into the rate. `seasonal = yes` fits an annual sinusoid with each hexagon's rate to prevent this.
+
+The term costs two parameters in each hexagon. With about 13 passes that inflates the SE.
+
+Waikato, 3 km hexagons:
+
+| | `seasonal = yes` | `seasonal = no` |
+|---|---|---|
+| Median SE | 7.7 mm year⁻¹ | 6.3 mm year⁻¹ |
+| Peat rate | −20.9 mm year⁻¹ | −21.0 mm year⁻¹ |
+| Map-to-map correlation | r = 0.90 | |
+| Typical hexagon change | 1.5 mm year⁻¹ | |
+| Hexagons changing by more than 5 mm year⁻¹ | one in five | |
+
+Use `seasonal = no` when the ground has no marked seasonal movement, or when you only need the regional pattern. Use `yes` when single hexagons matter on seasonally moving ground. With `reference = local`, only seasonal movement that differs from the reference land matters.
 6. The SE is computed in one of two ways:
    - by resampling whole passes, 300 times (default);
    - from the least-squares formula.
