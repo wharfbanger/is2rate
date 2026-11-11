@@ -29,7 +29,8 @@ PARAMS = [
     ("name", "is2rate", "prefix of output files"),
     ("crs", "auto", "working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193"),
     ("# --- reference surface", None, None),
-    ("dem", "copernicus", "copernicus (GLO-30, read from AWS) or DEM GeoTIFF/VRT path(s), comma-separated, in priority order"),
+    ("dem", "copernicus", "copernicus (GLO-30, read from AWS), DEM GeoTIFF/VRT path(s) comma-separated in priority order, or none (repeat pairs, no DEM)"),
+    ("pair_radius_m", "10", "dem = none: segments from different passes within this distance form a repeat pair"),
     ("dem_geoid", "egm2008", "vertical datum of the DEM(s): egm2008, ellipsoid, or a geoid-height GeoTIFF (N; H = h - N)"),
     ("# --- land cover and reference", None, None),
     ("landcover", "worldcover", "worldcover (ESA WorldCover 2021 10 m, read from AWS) or a GeoTIFF with WorldCover class codes"),
@@ -119,7 +120,8 @@ def read_params(path, overrides=()):
         q[k] = int(p[k])
     for k in ("atl08_ground", "seasonal", "write_gpkg", "write_png"):
         q[k] = yes(p[k])
-    q["dem"] = "copernicus" if p["dem"].lower() == "copernicus" else [s.strip() for s in p["dem"].split(",")]
+    q["dem"] = p["dem"].lower() if p["dem"].lower() in ("copernicus", "none") else [s.strip() for s in p["dem"].split(",")]
+    q["pair_radius_m"] = float(p["pair_radius_m"])
     q["grid_origin"] = None if p["grid_origin"].lower() == "auto" else lst(p["grid_origin"])
     q["exclude"] = None if p["exclude"].lower() == "none" else p["exclude"]
     q["segments_file"] = None if p["segments_file"].lower() == "none" else p["segments_file"]
@@ -273,6 +275,7 @@ def load_segments(files, p):
 
 def geoid_height(p, lon, lat):
     """N (m) at lon/lat for the DEM's vertical datum, so that H = h - N."""
+    if p["dem"] == "none": return np.zeros(len(lon))   # repeat pairs: the geoid cancels
     gd = p["dem_geoid"] if p["dem"] != "copernicus" else "egm2008"
     if gd.lower() == "ellipsoid": return np.zeros(len(lon))
     if gd.lower() == "egm2008":
@@ -358,7 +361,8 @@ def run(p, raw):
     G = dict(crs=W, transform=rasterio.transform.from_origin(X0, Y1, GR, GR), shape=(int(round((Y1 - Y0) / GR)), int(round((X1 - X0) / GR))))
 
     # inputs
-    dems = [copernicus(b, cache)] if p["dem"] == "copernicus" else p["dem"]
+    PAIR = p["dem"] == "none"
+    dems = [copernicus(b, cache)] if p["dem"] == "copernicus" else ([] if PAIR else p["dem"])
     lc = worldcover(b, cache) if p["landcover"].lower() == "worldcover" else p["landcover"]
     files = [p["segments_file"]] if p["segments_file"] else fetch_segments(p, cache)
     # heights, DEM residuals, land cover (cached: sampling a 1 m DEM takes minutes)
@@ -384,6 +388,7 @@ def run(p, raw):
             sl = np.degrees(np.arctan(np.hypot((z[1] - z[2]) / 20, (z[3] - z[4]) / 20)))
             ok = np.isfinite(z[0]); idx = np.where(m)[0][ok]
             s.loc[idx, "dem"] = k; s.loc[idx, "zdem"] = z[0][ok]; s.loc[idx, "slope"] = sl[ok]
+        if PAIR: s["dem"] = 0; s["zdem"] = 0.0; s["slope"] = 0.0   # no DEM: heights compared between passes at the same place
         s = s[s.dem >= 0].reset_index(drop=True)
         log("sampling land cover"); s["lc"] = sample(lc, s.x.values, s.y.values, W, 0)[0]
         keep = ["time", "lon", "lat", "x", "y", "H", "dem", "zdem", "slope", "lc", "rgt", "cycle", "spot", "h_mean", "n_fit_photons", "h_sigma",
@@ -410,8 +415,10 @@ def run(p, raw):
     s = s[q].copy(); n["quality"] = len(s)
     s["r"] = s.H - s.zdem
     s["pid"] = s.rgt.astype(np.int64) * 100 + s.cycle.astype(np.int64)
-    med = s.groupby(["pid", "dem"]).r.transform("median")
-    s = s[(s.r - med).abs() <= p["max_resid_dev_m"]].reset_index(drop=True); n["residual_filter"] = len(s)
+    if not PAIR:   # repeat pairs are filtered on pair differences instead
+        med = s.groupby(["pid", "dem"]).r.transform("median")
+        s = s[(s.r - med).abs() <= p["max_resid_dev_m"]]
+    s = s.reset_index(drop=True); n["residual_filter"] = len(s)
     ts = s.time; y0 = pd.to_datetime(ts.dt.year.astype(str) + "-01-01"); y1 = pd.to_datetime((ts.dt.year + 1).astype(str) + "-01-01")
     s["t"] = ts.dt.year + (ts - y0).dt.total_seconds() / (y1 - y0).dt.total_seconds()
     log("segments after quality filters", len(s), "passes", s.pid.nunique())
@@ -430,32 +437,77 @@ def run(p, raw):
     is_t = s.lc.isin(p["target_classes"]).values
     is_r = s.lc.isin(p["ref_classes"]).values & (s.xdist.values >= p["exclude_buffer_m"])
 
-    # per-hexagon trend
+    # per-hexagon series: one value per pass
     rng = np.random.default_rng(p["seed"]); R = p["ref_halfwidth_m"]; MN = p["min_segs_per_pass"]
-    xs_o = np.argsort(s.x.values); xs = s.x.values[xs_o]; Y = s.y.values
-    cols = dict(pid=s.pid.values, dem=s.dem.values, r=s.r.values, t=s.t.values, hex=s.hex.values)
-    rows = []; T = s[is_t].groupby("hex").groups; cand = [h for h in T if share[h] >= p["min_target_share"]]
-    log("fitting", len(cand), "hexagons with target segments and share >=", p["min_target_share"])
-    for i, h in enumerate(cand):
+
+    def dem_series(h):
         ti = np.asarray(T[h]); tp = pd.DataFrame({k: v[ti] for k, v in cols.items()})
         major = tp.groupby("pid").dem.agg(lambda v: v.value_counts().index[0])
         tp = tp[tp.dem.values == major.reindex(tp.pid).values]
         tg = tp.groupby("pid").agg(t=("t", "mean"), dem=("dem", "first"), m=("r", "median"), n=("r", "size")); tg = tg[tg.n >= MN]
-        if len(tg) < p["min_passes"]: continue
+        if len(tg) < p["min_passes"]: return None, 0
         if p["reference"] == "local":
             xc, yc = C[h]; a, z = np.searchsorted(xs, [xc - R, xc + R]); w = xs_o[a:z]
             w = w[(np.abs(Y[w] - yc) <= R) & is_r[w] & (cols["hex"][w] != h) & np.isin(cols["pid"][w], tg.index.values)]
             rg = pd.DataFrame({"pid": cols["pid"][w], "dem": cols["dem"][w], "r": cols["r"][w]}).groupby(["pid", "dem"]).r.agg(["median", "size"])
             key = pd.MultiIndex.from_arrays([tg.index.values, tg.dem.values])
             rm = rg.reindex(key); ok = (rm["size"].values >= MN)
-            tg = tg[ok]; d = tg.m.values - rm["median"].values[ok]
+            tg = tg[ok].copy(); tg["d"] = tg.m.values - rm["median"].values[ok]
         else:
-            d = tg.m.values
+            tg["d"] = tg.m.values
+        return tg, len(tp)
+
+    def pair_series(h):
+        """Repeat pairs: median height change between each two passes (target minus reference pairs), inverted to one height per pass.
+        Each connected network of passes has its own constant (passed to the fit as 'dem')."""
+        from scipy.sparse.csgraph import connected_components
+        pi = np.asarray(T[h])
+        g = pd.DataFrame(dict(pa=PR["pa"][pi], pb=PR["pb"][pi], dh=PR["dh"][pi])).groupby(["pa", "pb"]).dh.agg(["median", "size"])
+        g = g[g["size"] >= MN]
+        if p["reference"] == "local" and len(g):
+            xc, yc = C[h]; a, z = np.searchsorted(pxs, [xc - R, xc + R]); w = px_o[a:z]
+            w = w[(np.abs(PR["my"][w] - yc) <= R) & PR["is_r"][w] & (PR["ha"][w] != h) & (PR["hb"][w] != h)]
+            rg = pd.DataFrame(dict(pa=PR["pa"][w], pb=PR["pb"][w], dh=PR["dh"][w])).groupby(["pa", "pb"]).dh.agg(["median", "size"]).reindex(g.index)
+            ok = rg["size"].values >= MN; g = g[ok]; D = g["median"].values - rg["median"].values[ok]
+        else:
+            D = g["median"].values
+        if not len(g): return None, 0
+        pa = g.index.get_level_values(0).values; pb = g.index.get_level_values(1).values
+        ps = np.unique(np.r_[pa, pb])
+        if len(ps) < p["min_passes"]: return None, 0
+        ia = np.searchsorted(ps, pa); ib = np.searchsorted(ps, pb)
+        A = np.zeros((len(g), len(ps))); A[np.arange(len(g)), ia] = -1; A[np.arange(len(g)), ib] = 1
+        hgt = np.linalg.lstsq(A, D, rcond=None)[0]   # minimum norm: zero mean within each connected network
+        _, comp = connected_components((np.abs(A.T) @ np.abs(A)) > 0, directed=False)
+        return pd.DataFrame(dict(t=tpass.reindex(ps).values, dem=comp, d=hgt), index=ps), int(g["size"].sum())
+
+    if PAIR:
+        P = cKDTree(np.column_stack([s.x.values, s.y.values])).query_pairs(p["pair_radius_m"], output_type="ndarray")
+        P = P[s.pid.values[P[:, 0]] != s.pid.values[P[:, 1]]]
+        sw = s.t.values[P[:, 0]] > s.t.values[P[:, 1]]; ia = np.where(sw, P[:, 1], P[:, 0]); ib = np.where(sw, P[:, 0], P[:, 1])   # a earlier than b
+        pr = pd.DataFrame(dict(pa=s.pid.values[ia], pb=s.pid.values[ib], dh=s.H.values[ib] - s.H.values[ia], mx=(s.x.values[ia] + s.x.values[ib]) / 2,
+                               my=(s.y.values[ia] + s.y.values[ib]) / 2, ha=s.hex.values[ia], hb=s.hex.values[ib],
+                               is_t=is_t[ia] & is_t[ib], is_r=is_r[ia] & is_r[ib]))
+        dev = pr.dh - pr.groupby(["pa", "pb"]).dh.transform("median"); pr = pr[dev.abs() <= p["max_resid_dev_m"]].reset_index(drop=True)
+        n["pairs"] = len(pr); log("repeat pairs within", p["pair_radius_m"], "m:", len(pr), "between", pr.groupby(["pa", "pb"]).ngroups, "pass pairs")
+        PR = {k: pr[k].values for k in pr.columns}; px_o = np.argsort(PR["mx"]); pxs = PR["mx"][px_o]
+        tpass = s.groupby("pid").t.mean()
+        T = pr[pr.is_t & (pr.ha == pr.hb)].groupby("ha").groups; series = pair_series
+    else:
+        xs_o = np.argsort(s.x.values); xs = s.x.values[xs_o]; Y = s.y.values
+        cols = dict(pid=s.pid.values, dem=s.dem.values, r=s.r.values, t=s.t.values, hex=s.hex.values)
+        T = s[is_t].groupby("hex").groups; series = dem_series
+    rows = []; cand = [h for h in T if share[h] >= p["min_target_share"]]
+    log("fitting", len(cand), "hexagons with target data and share >=", p["min_target_share"])
+    for i, h in enumerate(cand):
+        tg, nseg = series(h)
+        if tg is None or len(tg) < p["min_passes"]: continue
+        d = tg.d.values
         rate, se_f, dof = fit(tg.t.values, tg.dem.values, d * 1000.0, p["seasonal"], p["min_passes"])
         if not np.isfinite(rate): continue
         se_b = boot_se(tg.t.values, tg.dem.values, d * 1000.0, p["seasonal"], p["n_boot"], rng) if p["se_method"] == "bootstrap" else np.nan
         rows.append(dict(hid=int(h), x=C[h][0], y=C[h][1], rate=rate, se=se_b if p["se_method"] == "bootstrap" else se_f, se_formula=se_f,
-                         se_boot=se_b, n_pass=len(tg), dof=dof, target_share=round(float(share[h]), 3), n_target_seg=int(len(tp))))
+                         se_boot=se_b, n_pass=len(tg), dof=dof, target_share=round(float(share[h]), 3), n_target_seg=nseg))
         if (i + 1) % 100 == 0: log(f"  {i + 1}/{len(cand)}")
     Hx = pd.DataFrame(rows); log("hexagons with a rate", len(Hx))
     if not len(Hx): sys.exit("no hexagon has enough passes")

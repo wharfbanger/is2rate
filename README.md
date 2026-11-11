@@ -106,3 +106,15 @@ An online test also ran successfully, on a 0.2° × 0.15° area near Kopuatai wi
 ## Licence
 
 MIT. See `LICENSE`.
+
+## Experimental: repeat pairs (`dem = none`)
+
+This mode needs no DEM. Segments from different passes within `pair_radius_m` (default 10 m) of each other form repeat pairs. The pairs are differenced against the reference land and inverted to give one height per pass.
+
+It was tested in the Waikato against the LiDAR run:
+
+- **Bias** is small (median difference +0.1 to +1.2 mm year⁻¹).
+- **Noise** is high: r = 0.3–0.44 at 3 km and 0.27 at 10 km.
+- **Coverage** is lower, because only 30–45% of segments have a repeat. Rates are reported for 205–461 of 562 hexagons, depending on pair radius and minimum pairs.
+
+This is no better than Copernicus, so Copernicus remains the default where no LiDAR exists.
