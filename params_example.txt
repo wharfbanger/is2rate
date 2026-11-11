@@ -1,4 +1,4 @@
-# is2rate 0.1.0 parameter file. Lines: key = value  # comment
+# is2rate 0.2.0 parameter file. Lines: key = value  # comment
 
 # --- area and time
 bbox = 175.2, -37.95, 175.7, -37.6  # lon_min, lat_min, lon_max, lat_max (WGS84 degrees), e.g. 175.2, -37.95, 175.7, -37.6. Required
@@ -50,7 +50,8 @@ max_resid_dev_m = 0.5              # drop segments whose residual is further tha
 # --- trend fit
 min_segs_per_pass = 10             # minimum target and reference segments on a pass
 min_passes = 8                     # minimum passes for a rate
-seasonal = yes                     # fit an annual sinusoid
+seasonal = yes                     # yes: fit an annual sinusoid in each cell; regional: one annual cycle per cell class (cells at least half in 'exclude' and the rest), removed before each cell's fit; no
+pass_weights = none                # none, or count: weight passes by n/(n + 20), n = target segments on the pass
 se_method = bootstrap              # band 2: bootstrap (whole passes resampled) or formula (least-squares SE)
 n_boot = 300                       # bootstrap resamples
 seed = 0                           # random seed

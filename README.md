@@ -21,7 +21,7 @@ The method is the one used for the Waikato, New Zealand (Harvey, in prep., *ICES
    Where DEMs overlap, each pass uses the DEM that holds most of the hexagon's segments.
 5. The rate is the least-squares trend of these per-pass differences. The fit includes a constant for each DEM and, optionally, an annual sinusoid (`seasonal`). A rate needs at least 8 passes, each with at least 10 target and 10 reference segments.
 
-### Seasonal term (`seasonal = yes | no`)
+### Seasonal term (`seasonal = yes | regional | no`)
 
 Some ground rises and falls through the year, such as peat, shrink-swell clays, or irrigated or drained land. Passes fall unevenly through the year. If a hexagon's early passes were mostly wet-season and its late passes mostly dry-season, the seasonal cycle would leak into the rate. `seasonal = yes` fits an annual sinusoid with each hexagon's rate to prevent this.
 
@@ -38,6 +38,13 @@ Waikato, 3 km hexagons:
 | Hexagons changing by more than 5 mm year⁻¹ | one in five | |
 
 Use `seasonal = no` when the ground has no marked seasonal movement, or when you only need the regional pattern. Use `yes` when single hexagons matter on seasonally moving ground. With `reference = local`, only seasonal movement that differs from the reference land matters.
+
+`seasonal = regional` is the compromise. It estimates one annual cycle from all cells together, with each cell keeping its own rate and constants. If `exclude` is set, it estimates one cycle for cells at least half inside `exclude` and one for the rest. It subtracts that cycle from each cell's series before fitting the cell's trend. This removes the seasonal signal without spending parameters in each cell. In the Waikato it gave a median SE of 5.9 mm year⁻¹ and reproduced the published map (r = 0.89). The paper's parameter files in `examples/` use it.
+
+`pass_weights = count` weights each pass by n/(n + 20), where n is the number of target segments on the pass. In the Waikato it changed almost nothing.
+
+The output GeoPackage includes `exclude_frac`, the fraction of each cell's target segments inside `exclude` (e.g. the Organic Soil fraction).
+
 6. The SE is computed in one of two ways:
    - by resampling whole passes, 300 times (default);
    - from the least-squares formula.

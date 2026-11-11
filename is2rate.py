@@ -17,7 +17,7 @@ import argparse, glob, json, math, os, sys, time
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # (key, default, comment). Defaults are those used for the Waikato (Harvey, in prep.).
 PARAMS = [
@@ -65,7 +65,8 @@ PARAMS = [
     ("# --- trend fit", None, None),
     ("min_segs_per_pass", "10", "minimum target and reference segments on a pass"),
     ("min_passes", "8", "minimum passes for a rate"),
-    ("seasonal", "yes", "fit an annual sinusoid"),
+    ("seasonal", "yes", "yes: fit an annual sinusoid in each cell; regional: one annual cycle per cell class (cells at least half in 'exclude' and the rest), removed before each cell's fit; no"),
+    ("pass_weights", "none", "none, or count: weight passes by n/(n + 20), n = target segments on the pass"),
     ("se_method", "bootstrap", "band 2: bootstrap (whole passes resampled) or formula (least-squares SE)"),
     ("n_boot", "300", "bootstrap resamples"),
     ("seed", "0", "random seed"),
@@ -120,7 +121,10 @@ def read_params(path, overrides=()):
         q[k] = float(p[k])
     for k in ("min_photons", "min_segs_per_pass", "min_passes", "n_boot", "seed"):
         q[k] = int(p[k])
-    for k in ("atl08_ground", "seasonal", "write_gpkg", "write_png"):
+    if p["seasonal"].lower() not in ("yes", "no", "regional", "y", "n", "true", "false", "1", "0"): sys.exit("seasonal must be yes, no or regional")
+    q["seasonal"] = "regional" if p["seasonal"].lower() == "regional" else ("yes" if yes(p["seasonal"]) else "no")
+    if p["pass_weights"] not in ("none", "count"): sys.exit("pass_weights must be none or count")
+    for k in ("atl08_ground", "write_gpkg", "write_png"):
         q[k] = yes(p[k])
     q["dem"] = p["dem"].lower() if p["dem"].lower() in ("copernicus", "none") else [s.strip() for s in p["dem"].split(",")]
     q["pair_radius_m"] = float(p["pair_radius_m"])
@@ -334,22 +338,38 @@ def design(t, dem, seasonal):
     return np.column_stack(cols)
 
 
-def fit(t, dem, d_mm, seasonal, min_passes):
+def fit(t, dem, d_mm, seasonal, min_passes, w=None):
+    """Weighted least squares (weights w, default 1); returns rate, its SE and degrees of freedom."""
     n = len(t)
     if n < min_passes: return np.nan, np.nan, 0
     X = design(t, dem, seasonal); dof = n - X.shape[1]
     if dof < 2: return np.nan, np.nan, dof
-    beta, *_ = np.linalg.lstsq(X, d_mm, rcond=None)
-    s2 = np.sum((d_mm - X @ beta) ** 2) / dof
-    return beta[0], float(np.sqrt(s2 * np.linalg.pinv(X.T @ X)[0, 0])), dof
+    w = np.ones(n) if w is None else w; sw = np.sqrt(w)
+    beta, *_ = np.linalg.lstsq(X * sw[:, None], d_mm * sw, rcond=None)
+    s2 = np.sum(w * (d_mm - X @ beta) ** 2) / dof
+    return beta[0], float(np.sqrt(s2 * np.linalg.pinv((X * w[:, None]).T @ X)[0, 0])), dof
 
 
-def boot_se(t, dem, d_mm, seasonal, n_boot, rng):
-    v = []; k = design(t, dem, seasonal).shape[1]
+def regional_cycle(series, seasonal_rows=True):
+    """One annual cycle (sin, cos; mm) shared by all series, each with its own rate and constants per DEM (weighted, pooled)."""
+    blocks = []; ncol = 0
+    for t, dem, d, w in series:
+        u = np.unique(dem); blocks.append((t, dem, d, w, ncol, u)); ncol += 1 + len(u)
+    nr = sum(len(b[0]) for b in blocks); A = np.zeros((nr, ncol + 2)); y = np.zeros(nr); ww = np.zeros(nr); k = 0
+    for t, dem, d, w, c0, u in blocks:
+        m = len(t); A[k:k + m, c0] = t - 2022.0
+        for j, dm in enumerate(u): A[k:k + m, c0 + 1 + j] = (dem == dm)
+        A[k:k + m, -2] = np.sin(2 * np.pi * t); A[k:k + m, -1] = np.cos(2 * np.pi * t); y[k:k + m] = d; ww[k:k + m] = w; k += m
+    sw = np.sqrt(ww); beta = np.linalg.lstsq(A * sw[:, None], y * sw, rcond=None)[0]
+    return beta[-2:]
+
+
+def boot_se(t, dem, d_mm, seasonal, n_boot, rng, w=None):
+    v = []; k = design(t, dem, seasonal).shape[1]; w = np.ones(len(t)) if w is None else w
     for _ in range(n_boot):
         i = rng.integers(0, len(t), len(t))
         if len(np.unique(i)) < k + 2: continue   # too few distinct passes: near-singular fit, absurd rates
-        r, _, _ = fit(t[i], dem[i], d_mm[i], seasonal, 1)
+        r, _, _ = fit(t[i], dem[i], d_mm[i], seasonal, 1, w[i])
         if np.isfinite(r): v.append(r)
     return float(np.std(v, ddof=1)) if len(v) > 10 else np.nan
 
@@ -518,18 +538,36 @@ def run(p, raw):
         xs_o = np.argsort(s.x.values); xs = s.x.values[xs_o]; Y = s.y.values
         cols = dict(pid=s.pid.values, dem=s.dem.values, r=s.r.values, t=s.t.values, hex=s.hex.values)
         T = s[is_t].groupby("hex").groups; series = dem_series
-    rows = []; cand = [h for h in T if share[h] >= p["min_target_share"]]
-    log("fitting", len(cand), "hexagons with target data and share >=", p["min_target_share"])
-    for i, h in enumerate(cand):
+    # fraction of each cell's target segments inside 'exclude' (e.g. the Organic Soil fraction)
+    ef = pd.Series((s.xdist.values <= 0)[is_t]).groupby(s.hex.values[is_t]).mean()
+    cand = [h for h in T if share[h] >= p["min_target_share"]]
+    log("building series for", len(cand), "cells with target data and share >=", p["min_target_share"])
+    SER = {}
+    for h in cand:
         tg, nseg = series(h)
         if tg is None or len(tg) < p["min_passes"]: continue
-        d = tg.d.values
-        rate, se_f, dof = fit(tg.t.values, tg.dem.values, d * 1000.0, p["seasonal"], p["min_passes"])
+        w = (tg.n.values / (tg.n.values + 20.0)) if (p["pass_weights"] == "count" and "n" in tg) else np.ones(len(tg))
+        SER[h] = (tg.t.values, tg.dem.values, tg.d.values * 1000.0, w, nseg)
+    cyc = {}
+    if p["seasonal"] == "regional":
+        cls = {h: (bool(p["exclude"]) and ef.get(h, 0.0) >= 0.5) for h in SER}
+        for c in (True, False):
+            hs = [h for h in SER if cls[h] == c]
+            if len(hs) < 5: continue
+            ab = regional_cycle([SER[h][:4] for h in hs]); cyc[c] = ab
+            log(f"regional annual cycle, {'cells mostly in exclude' if c else 'other cells'} ({len(hs)}): amplitude {np.hypot(*ab):.1f} mm")
+    SEAS = p["seasonal"] == "yes"
+    rows = []
+    for i, (h, (t, dem, d, w, nseg)) in enumerate(SER.items()):
+        if p["seasonal"] == "regional" and cls[h] in cyc:
+            a_, b_ = cyc[cls[h]]; d = d - a_ * np.sin(2 * np.pi * t) - b_ * np.cos(2 * np.pi * t)
+        rate, se_f, dof = fit(t, dem, d, SEAS, p["min_passes"], w)
         if not np.isfinite(rate): continue
-        se_b = boot_se(tg.t.values, tg.dem.values, d * 1000.0, p["seasonal"], p["n_boot"], rng) if p["se_method"] == "bootstrap" else np.nan
+        se_b = boot_se(t, dem, d, SEAS, p["n_boot"], rng, w) if p["se_method"] == "bootstrap" else np.nan
         rows.append(dict(hid=int(h), x=C[h][0], y=C[h][1], rate=rate, se=se_b if p["se_method"] == "bootstrap" else se_f, se_formula=se_f,
-                         se_boot=se_b, n_pass=len(tg), dof=dof, target_share=round(float(share[h]), 3), n_target_seg=nseg))
-        if (i + 1) % 100 == 0: log(f"  {i + 1}/{len(cand)}")
+                         se_boot=se_b, n_pass=len(t), dof=dof, target_share=round(float(share[h]), 3), exclude_frac=round(float(ef.get(h, np.nan)), 3),
+                         n_target_seg=nseg))
+        if (i + 1) % 100 == 0: log(f"  {i + 1}/{len(SER)}")
     Hx = pd.DataFrame(rows); log("hexagons with a rate", len(Hx))
     if not len(Hx): sys.exit("no hexagon has enough passes")
 

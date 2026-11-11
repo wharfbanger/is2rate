@@ -1,0 +1,19 @@
+# is2rate parameters for the ICESat-2 hexagon results of Harvey (in prep.), Waikato, New Zealand.
+# Inputs: LINZ Waikato LiDAR 1 m DEMs 2024 and 2021 (data.linz.govt.nz; mosaicked here as VRTs), NZGeoid2016 (LINZ),
+# S-map Organic Soils (Manaaki Whenua - Landcare Research), ESA WorldCover 2021 (read automatically).
+# ICESat-2 segments: SlideRule ATL06-SR with the defaults of this tool, 2018-10-13 to 2026-10-20 (the paper run reused one fetch with these parameters).
+bbox = 174.689, -38.071, 175.804, -37.140
+start = 2018-10-13
+end = 2026-10-20
+crs = 2193
+dem = data/waikato_2024.vrt, data/waikato_2021.vrt
+dem_geoid = data/nz_linz_nzgeoid2016.tif
+landcover = worldcover
+exclude = data/smap_organic_waikato.shp
+exclude_buffer_m = 500
+hex_width_m = 3000
+grid_origin = 1750880.595, 5786524.834
+seasonal = regional
+segments_file = none
+out_dir = is2rate_3km
+name = waikato_3km
