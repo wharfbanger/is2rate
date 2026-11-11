@@ -9,7 +9,8 @@ name = is2rate                     # prefix of output files
 crs = auto                         # working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193
 
 # --- reference surface
-dem = copernicus                   # copernicus (GLO-30, read from AWS) or DEM GeoTIFF/VRT path(s), comma-separated, in priority order
+dem = copernicus                   # copernicus (GLO-30, read from AWS), DEM GeoTIFF/VRT path(s) comma-separated in priority order, or none (repeat pairs, no DEM)
+pair_radius_m = 10                 # dem = none: segments from different passes within this distance form a repeat pair
 dem_geoid = egm2008                # vertical datum of the DEM(s): egm2008, ellipsoid, or a geoid-height GeoTIFF (N; H = h - N)
 
 # --- land cover and reference
@@ -24,6 +25,7 @@ ref_halfwidth_m = 10000            # reference window, +- this distance from the
 
 # --- hexagons and output grid
 hex_width_m = 3000                 # hexagon width, flat to flat (m)
+cell_shape = hex                   # hex (hexagons) or square (square cells of width hex_width_m)
 hex_orientation = flat             # flat (flat top, as the published maps) or pointy (pointy top)
 grid_origin = auto                 # x, y of the first hexagon centre in the working CRS (auto: lower-left corner of the bbox)
 out_res_m = 100                    # pixel size of the output GeoTIFF (m)

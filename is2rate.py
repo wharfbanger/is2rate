@@ -43,6 +43,7 @@ PARAMS = [
     ("ref_halfwidth_m", "10000", "reference window, +- this distance from the hexagon centre (hexagon itself excluded)"),
     ("# --- hexagons and output grid", None, None),
     ("hex_width_m", "3000", "hexagon width, flat to flat (m)"),
+    ("cell_shape", "hex", "hex (hexagons) or square (square cells of width hex_width_m)"),
     ("hex_orientation", "flat", "flat (flat top, as the published maps) or pointy (pointy top)"),
     ("grid_origin", "auto", "x, y of the first hexagon centre in the working CRS (auto: lower-left corner of the bbox)"),
     ("out_res_m", "100", "pixel size of the output GeoTIFF (m)"),
@@ -126,6 +127,7 @@ def read_params(path, overrides=()):
     q["exclude"] = None if p["exclude"].lower() == "none" else p["exclude"]
     q["segments_file"] = None if p["segments_file"].lower() == "none" else p["segments_file"]
     if p["reference"] not in ("local", "none"): sys.exit("reference must be local or none")
+    if p["cell_shape"] not in ("hex", "square"): sys.exit("cell_shape must be hex or square")
     if p["hex_orientation"] not in ("flat", "pointy"): sys.exit("hex_orientation must be flat or pointy")
     if p["se_method"] not in ("bootstrap", "formula"): sys.exit("se_method must be bootstrap or formula")
     return q, p
@@ -293,8 +295,11 @@ def geoid_height(p, lon, lat):
 
 
 # ---------------------------------------------------------------- hexagons
-def hexgrid(x0, y0, x1, y1, width, flat=True):
-    """Hexagon centres (width = flat-to-flat distance); a point belongs to its nearest centre."""
+def hexgrid(x0, y0, x1, y1, width, flat=True, square=False):
+    """Cell centres (width = flat-to-flat distance); a point belongs to its nearest centre, so square centres give square cells."""
+    if square:
+        X, Y = np.meshgrid(np.arange(x0, x1 + width, width), np.arange(y0, y1 + width, width))
+        return np.column_stack([X.ravel(), Y.ravel()]), width / 2
     r = width / np.sqrt(3); d = 1.5 * r; pts = []
     if flat:
         for i, x in enumerate(np.arange(x0, x1 + d, d)):
@@ -305,14 +310,18 @@ def hexgrid(x0, y0, x1, y1, width, flat=True):
     return np.array(pts), r
 
 
-def hex_angles(flat):
-    return np.radians((0 if flat else 30) + 60 * np.arange(6))
+def cell_vertices(xc, yc, r, p):
+    """Vertices of a cell: r is the hexagon circumradius, or half the square width."""
+    if p["cell_shape"] == "square":
+        a = np.radians(45 + 90 * np.arange(4)); r = r * np.sqrt(2)
+    else:
+        a = np.radians((0 if p["hex_orientation"] == "flat" else 30) + 60 * np.arange(6))
+    return np.column_stack([xc + r * np.cos(a), yc + r * np.sin(a)])
 
 
-def hex_polygon(xc, yc, r, flat=True):
+def hex_polygon(xc, yc, r, p):
     from shapely.geometry import Polygon
-    a = hex_angles(flat)
-    return Polygon(np.column_stack([xc + r * np.cos(a), yc + r * np.sin(a)]))
+    return Polygon(cell_vertices(xc, yc, r, p))
 
 
 # ---------------------------------------------------------------- trend fit
@@ -425,13 +434,13 @@ def run(p, raw):
 
     # hexagons and target share
     ox, oy = p["grid_origin"] if p["grid_origin"] else (X0, Y0)
-    C, rr = hexgrid(ox, oy, X1, Y1, p["hex_width_m"], p["hex_orientation"] == "flat"); tree = cKDTree(C)
+    C, rr = hexgrid(ox, oy, X1, Y1, p["hex_width_m"], p["hex_orientation"] == "flat", p["cell_shape"] == "square"); tree = cKDTree(C)
     log("hexagons", len(C), "land-cover share")
     lcg = to_grid(lc, G, Resampling.nearest)
     gx, gy = np.meshgrid(X0 + GR * (np.arange(G["shape"][1]) + 0.5), Y1 - GR * (np.arange(G["shape"][0]) + 0.5))
     tm = np.isin(lcg, p["target_classes"])
     hg = tree.query(np.column_stack([gx[tm], gy[tm]]))[1]
-    share = np.bincount(hg, minlength=len(C)) * GR * GR / (p["hex_width_m"] ** 2 * np.sqrt(3) / 2)
+    share = np.bincount(hg, minlength=len(C)) * GR * GR / (p["hex_width_m"] ** 2 * (1 if p["cell_shape"] == "square" else np.sqrt(3) / 2))
     del gx, gy, lcg, tm, hg
     s["hex"] = tree.query(np.column_stack([s.x.values, s.y.values]))[1]
     is_t = s.lc.isin(p["target_classes"]).values
@@ -530,7 +539,7 @@ def run(p, raw):
     write_qml(stem + "_rate.qml"); log("wrote", stem + "_rate.tif")
     if p["write_gpkg"]:
         import geopandas as gpd
-        gpd.GeoDataFrame(Hx, geometry=[hex_polygon(a, c, rr, p["hex_orientation"] == "flat") for a, c in zip(Hx.x, Hx.y)], crs=W).to_file(stem + "_hexagons.gpkg"); log("wrote", stem + "_hexagons.gpkg")
+        gpd.GeoDataFrame(Hx, geometry=[hex_polygon(a, c, rr, p) for a, c in zip(Hx.x, Hx.y)], crs=W).to_file(stem + "_hexagons.gpkg"); log("wrote", stem + "_hexagons.gpkg")
     if p["write_png"]: quicklook(Hx, rr, W, p, stem + "_rate.png", (X0, Y0, X1, Y1))
     summ = dict(version=__version__, params=raw, crs=W.to_string(), counts=n, passes=int(s.pid.nunique()), hexagons=len(Hx),
                 median_passes=float(Hx.n_pass.median()), median_rate=float(Hx.rate.median()), median_se=float(Hx.se.median()),
@@ -560,8 +569,7 @@ def quicklook(Hx, rr, W, p, path, ext):
     import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
     from matplotlib.patches import Patch
-    a = hex_angles(p["hex_orientation"] == "flat")
-    polys = [np.column_stack([x + rr * np.cos(a), y + rr * np.sin(a)]) for x, y in zip(Hx.x, Hx.y)]
+    polys = [cell_vertices(x, y, rr, p) for x, y in zip(Hx.x, Hx.y)]
     up = np.array([v for v, _, _ in BREAKS]); cl = [BREAKS[int(np.searchsorted(up, v))][1] for v in Hx.rate.values]
     w = ext[2] - ext[0]; h = ext[3] - ext[1]
     fig, ax = plt.subplots(figsize=(7, 7 * h / w + 1.2))
@@ -569,7 +577,7 @@ def quicklook(Hx, rr, W, p, path, ext):
     ax.set_xlim(ext[0], ext[2]); ax.set_ylim(ext[1], ext[3]); ax.set_aspect("equal"); ax.set_facecolor("#d4d4d4")
     ax.ticklabel_format(useOffset=False, style="plain"); ax.tick_params(labelsize=7)
     ref = "relative to reference land on the same passes" if p["reference"] == "local" else "absolute"
-    ax.set_title(f"ICESat-2, {p['hex_width_m'] / 1000:g} km hexagons ({ref}), {p['start']:%Y-%m-%d} to {p['end']:%Y-%m-%d}", loc="left", fontsize=8)
+    ax.set_title(f"ICESat-2, {p['hex_width_m'] / 1000:g} km {'squares' if p['cell_shape'] == 'square' else 'hexagons'} ({ref}), {p['start']:%Y-%m-%d} to {p['end']:%Y-%m-%d}", loc="left", fontsize=8)
     ax.legend(handles=[Patch(facecolor=c, edgecolor="#999999", lw=0.4, label=l) for _, c, l in BREAKS], title="Rate (mm year⁻¹)", fontsize=6.5,
               title_fontsize=7, ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.06), frameon=False)
     ax.set_xlabel(W.name, fontsize=7)

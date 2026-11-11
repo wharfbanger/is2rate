@@ -84,6 +84,7 @@ See `params_example.txt` for every parameter and its default. The main ones:
 | `reference` | local | local (relative to reference land) or none (absolute) |
 | `ref_halfwidth_m` | 10000 | reference window, ±m from the hexagon centre |
 | `hex_width_m` | 3000 | hexagon width, flat to flat (m) |
+| `cell_shape` | hex | hex (hexagons) or square (squares of width `hex_width_m`) |
 | `hex_orientation` | flat | flat-topped (as the published maps) or pointy-topped |
 | `out_res_m` | 100 | GeoTIFF pixel size (m) |
 | `se_method` | bootstrap | band 2: bootstrap or formula |
