@@ -30,7 +30,7 @@ PARAMS = [
     ("name", "is2rate", "prefix of output files"),
     ("crs", "auto", "working and output CRS: auto (UTM zone of the bbox centre) or an EPSG code, e.g. 2193"),
     ("# --- reference surface", None, None),
-    ("dem", "copernicus", "copernicus (GLO-30, read from AWS), DEM GeoTIFF/VRT path(s) comma-separated in priority order, or none (repeat pairs, no DEM)"),
+    ("dem", "copernicus", "copernicus (GLO-30, read from AWS), DEM GeoTIFF/VRT path(s) comma-separated in priority order, or none (repeat pairs, no DEM). Use aerial LiDAR where available; satellite DEMs (e.g. Copernicus) may work, but with larger SEs"),
     ("pair_radius_m", "10", "dem = none: segments from different passes within this distance form a repeat pair"),
     ("dem_geoid", "egm2008", "vertical datum of the DEM(s): egm2008, ellipsoid, or a geoid-height GeoTIFF (N; H = h - N)"),
     ("# --- land cover and reference", None, None),

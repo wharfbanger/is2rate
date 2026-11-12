@@ -83,7 +83,7 @@ See `params_example.txt` for every parameter and its default. The main ones:
 | `bbox` | — | lon_min, lat_min, lon_max, lat_max (WGS84) |
 | `start`, `end` | 2018-10-13, 2026-12-31 | period (YYYY-MM-DD or YYYY) |
 | `crs` | auto | output CRS (UTM zone of the bbox centre, or an EPSG code) |
-| `dem` | copernicus | Copernicus GLO-30, or your own DEM(s) in priority order |
+| `dem` | copernicus | Copernicus GLO-30, or your own DEM(s) in priority order. Use aerial LiDAR where available; satellite DEMs may work, but with larger SEs |
 | `dem_geoid` | egm2008 | DEM vertical datum: egm2008, ellipsoid, or a geoid-height GeoTIFF |
 | `landcover` | worldcover | ESA WorldCover 2021, or a GeoTIFF with WorldCover codes |
 | `target_classes`, `ref_classes` | 30, 40 | grassland and cropland |
@@ -97,7 +97,7 @@ See `params_example.txt` for every parameter and its default. The main ones:
 | `out_res_m` | 100 | GeoTIFF pixel size (m) |
 | `se_method` | bootstrap | band 2: bootstrap or formula |
 
-The DEM is only a fixed reference surface. It is also used for the slope filter. Static DEM errors are constant in time and are absorbed by the DEM constant, so they do not bias the trend. They do add scatter, because tracks fall in different places on each pass. Use LiDAR where it exists; Copernicus works anywhere but is noisier (see Validation).
+The DEM is only a fixed reference surface. It is also used for the slope filter. Static DEM errors are constant in time and are absorbed by the DEM constant, so they do not bias the trend. They do add scatter, because tracks fall in different places on each pass. A DEM is required: ICESat-2 is pointed off its reference tracks, so repeat passes do not measure the same ground, and the DEM is what makes them comparable. Its epoch does not matter, because only the change of the residuals between passes enters the rate. **Use aerial LiDAR where available; satellite DEMs (e.g. Copernicus) may work, but with larger SEs** (see Validation).
 
 ### Fixed reference area (`ref_area`)
 
